@@ -17,10 +17,10 @@ func init() {
 
 // parseCaddyfile sets up the handler from Caddyfile. Syntax:
 //
-//    jwtauth [<matcher>] {
-//        sign_key <sign_key>
-//        ...
-//    }
+//	jwtauth [<matcher>] {
+//	    sign_key <sign_key>
+//	    ...
+//	}
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var ja JWTAuth
 

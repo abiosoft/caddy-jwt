@@ -8,13 +8,15 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/MicahParks/keyfunc"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/caddyauth"
-	"github.com/golang-jwt/jwt"
+	"github.com/golang-jwt/jwt/v4"
 	"go.uber.org/zap"
 )
 
@@ -39,6 +41,10 @@ type JWTAuth struct {
 	//     -----BEGIN PUBLIC KEY-----
 	//     ...
 	//     -----END PUBLIC KEY-----
+	//
+	// For remote JWK (JSON Web Keys), specify the URL. e.g.
+	//
+	//  https://www.gstatic.com/iap/verify/public_key-jwk
 	SignKey string `json:"sign_key"`
 
 	// FromQuery defines a list of names to get tokens from the query parameters
@@ -116,6 +122,7 @@ type JWTAuth struct {
 
 	logger        *zap.Logger
 	parsedSignKey interface{} // can be []byte, *rsa.PublicKey, *ecdsa.PublicKey, etc.
+	jwk           bool
 }
 
 // CaddyModule implements caddy.Module interface.
@@ -134,6 +141,15 @@ func (ja *JWTAuth) Provision(ctx caddy.Context) error {
 
 // Validate implements caddy.Validator interface.
 func (ja *JWTAuth) Validate() error {
+	// jwks
+	if strings.HasPrefix(ja.SignKey, "http://") || strings.HasPrefix(ja.SignKey, "https://") {
+		if _, err := url.Parse(ja.SignKey); err != nil {
+			return err
+		}
+		ja.jwk = true
+		return nil
+	}
+
 	if keyBytes, asymmetric, err := parseSignKey(ja.SignKey); err != nil {
 		// Key(step 1): base64 -> raw bytes.
 		return fmt.Errorf("invalid sign_key: %w", err)
@@ -177,15 +193,24 @@ func (ja *JWTAuth) Authenticate(rw http.ResponseWriter, r *http.Request) (User, 
 		UseJSONNumber: true, // parse number in JSON object to json.Number instead of float64
 	}
 
+	tokenFunc := func(*Token) (interface{}, error) {
+		return ja.parsedSignKey, nil
+	}
+	if ja.jwk {
+		jwks, err := keyfunc.Get(ja.SignKey, keyfunc.Options{})
+		if err != nil {
+			return User{}, false, err
+		}
+		tokenFunc = jwks.Keyfunc
+	}
+
 	for _, candidateToken := range candidates {
 		tokenString := normToken(candidateToken)
 		if _, ok := checked[tokenString]; ok {
 			continue
 		}
 
-		gotToken, err = parser.Parse(tokenString, func(*Token) (interface{}, error) {
-			return ja.parsedSignKey, nil
-		})
+		gotToken, err = parser.Parse(tokenString, tokenFunc)
 		checked[tokenString] = struct{}{}
 
 		logger := ja.logger.With(zap.String("token_string", desensitizedTokenString(tokenString)))
